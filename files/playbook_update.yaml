@@ -1,11 +1,11 @@
 ---
 - name: copy the nginx config file and restart nginx
-      copy:
-        src: update_port.cfg
-        dest: /etc/nginx/nginx.conf
-      become: yes
+  copy:
+    src: update_port.cfg
+    dest: /etc/nginx/nginx.conf
+  become: yes
 - name: restart nginx
-      service:
-        name: nginx
-        state: restarted
-      become: yes
+  service:
+    name: nginx
+    state: restarted
+  become: yes
