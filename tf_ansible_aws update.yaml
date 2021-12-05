@@ -1,0 +1,167 @@
+tosca_definitions_version: cloudify_dsl_1_3
+
+description: >
+  This blueprint creates infrastructure on AWS using Terraform.
+
+imports:
+  - http://cloudify.co/spec/cloudify/5.2.7/types.yaml
+  - plugin:cloudify-terraform-plugin
+  - plugin:cloudify-ansible-plugin
+  - plugin:cloudify-utilities-plugin?version= >=1.22.1
+
+inputs:
+
+  aws_region_name:
+    type: string
+    constraints:
+      - valid_values:
+        - us-east-1
+        - us-west-1
+        - ca-central-1
+        - eu-west-1
+
+  aws_zone_name:
+    type: string
+    default: { concat: [ { get_input: aws_region_name }, 'a' ] }
+
+
+  env_type:
+    description: |
+      The environment's type to create
+    type: string
+    constraints:
+      - valid_values:
+          - DEV
+          - QA
+          - PRODUCTION
+
+  vm_count:
+     description: "Number of VM's"
+     type: integer
+     constraints:
+       - valid_values:
+         - 1
+         - 2
+         - 3
+
+
+node_templates:
+
+  terraform:
+    type: cloudify.nodes.terraform
+    properties:
+      terraform_config:
+        executable_path: /usr/bin/terraform
+      resource_config:
+        use_existing_resource: true
+
+  cloud_resources:
+    type: cloudify.nodes.terraform.Module
+    properties:
+      resource_config:
+        source:
+          location: files/TF_2-main.zip
+        variables:
+          access_key: { get_secret: aws_access_key_id }
+          secret_key: { get_secret: aws_secret_access_key }
+          aws_region: { get_input: aws_region_name }
+          aws_zone: { get_input: aws_zone_name }
+          admin_user: centos
+          admin_key_public: { get_attribute: [agent_key, public_key_export] }
+          instance_type: { get_secret: [ eaas_params, aws, { get_input: env_type }, flavor, instance_type ] }
+
+    relationships:
+      - target: terraform
+        type: cloudify.terraform.relationships.run_on_host
+      - target: agent_key
+        type: cloudify.relationships.depends_on
+
+  ansible_playbook:
+    type: cloudify.nodes.ansible.Executor
+    properties:
+      playbook_source_path: https://github.com/moshemizrachi/nginx/archive/refs/heads/main.zip
+      playbook_path: files/playbook_update.yaml
+      run_data:
+        INDEX: { get_secret: [ eaas_params, aws, { get_input: env_type }, nginx_index ] }
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        start:
+          implementation: ansible.cloudify_ansible.tasks.run
+          inputs:
+            playbook_source_path: https://github.com/moshemizrachi/nginx/archive/refs/heads/main.zip
+            playbook_path: files/playbook_update.yaml
+            sources: { get_attribute: [ SELF, sources ] }
+        stop:
+          implementation: ansible.cloudify_ansible.tasks.run
+          inputs:
+            playbook_path: files/playbook_remove.yaml
+            sources: { get_attribute: [ SELF, sources ] }
+        delete:
+          implementation: ansible.cloudify_ansible.tasks.cleanup
+
+    relationships:
+      - type: cloudify.ansible.relationships.connected_to_host
+        target: cloud_resources
+        source_interfaces:
+          cloudify.interfaces.relationship_lifecycle:
+            preconfigure:
+              implementation: ansible.cloudify_ansible.tasks.ansible_requires_host
+              inputs:
+                group_name: webserver
+                hostname: nginx
+                host_config:
+                       ansible_host: { get_attribute: [ cloud_resources, resources, eip, instances, 0, attributes, public_ip ] }
+                       ansible_user: centos
+                       ansible_ssh_private_key_file: { get_attribute: [agent_key, private_key_export] }
+                       ansible_become: true
+                       ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+
+
+
+  agent_key:
+    type: cloudify.keys.nodes.RSAKey
+    properties:
+      resource_config:
+        key_name: agent_key
+        openssh_format: true
+      use_secret_store: true
+      use_secrets_if_exist: true
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: keys.cloudify_ssh_key.operations.create
+          inputs:
+            store_private_key_material: true
+
+capabilities:
+  name:
+    value: { get_attribute: [ cloud_resources, resources, example_vm, instances, 0, attributes, tags, Name ] }
+
+  endpoint:
+    description: The external endpoint of the application.
+    value: { concat: [ 'http://', { get_attribute: [ cloud_resources, resources, eip, instances, 0, attributes, public_ip ] } ] }
+
+  user:
+    description: user ID.
+    value: centos
+
+  key_content:
+    description: Private agent key
+    value: { get_attribute: [agent_key, private_key_export] }
+
+groups:
+
+  RG_1:
+    members:
+    - cloud_resources
+    - ansible_playbook
+
+policies:
+
+  scale_policy:
+    type: cloudify.policies.scaling
+    properties:
+      default_instances: { get_input: vm_count }
+      min_instances: 1
+      max_instances: 3
+    targets: [RG_1]
