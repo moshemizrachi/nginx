@@ -1,11 +1,22 @@
 ---
-- name: copy the nginx config file and restart nginx
-  copy:
-    src: update_port.cfg
-    dest: /etc/nginx/nginx.conf
-  become: yes
-- name: restart nginx
-  service:
-    name: nginx
-    state: restarted
-  become: yes
+- name: Modify nginx
+  hosts: all
+  become: true
+  tasks:
+  - name: ensure nginx is at the latest version
+    yum: name=nginx state=latest
+    become: yes
+  - name: start nginx
+    service:
+        name: nginx
+        state: started
+  - name: copy the nginx config file and restart nginx
+    copy:
+      src: update_port.cfg
+      dest: /etc/nginx/nginx.conf
+    become: yes
+  - name: restart nginx
+    service:
+      name: nginx
+      state: restarted
+    become: yes
