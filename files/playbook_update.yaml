@@ -19,6 +19,7 @@
     service:
       name: nginx
       state: started
+      enabled: true
   - name: copy the nginx config file and restart nginx
     copy:
       src: update_port.cfg
@@ -28,4 +29,5 @@
     service:
       name: nginx
       state: restarted
+      enabled: true
     become: yes
